@@ -1,0 +1,13 @@
+name = "duration_format"
+version = "1.0.0"
+
+description = "Parse and format durations in established string formats. Currently supports Go's time.ParseDuration grammar (also used by Prometheus, Kubernetes, HashiCorp tools, and InfluxDB)."
+licences = ["MIT"]
+repository = { type = "github", user = "louisbranch", repo = "duration_format" }
+
+[dependencies]
+gleam_stdlib = ">= 1.0.0 and < 2.0.0"
+gleam_time = ">= 1.8.0 and < 2.0.0"
+
+[dev_dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
