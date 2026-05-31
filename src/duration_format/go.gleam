@@ -33,6 +33,7 @@
 //// // -> "1h30m0s"
 //// ```
 
+import gleam/bool
 import gleam/float
 import gleam/int
 import gleam/list
@@ -93,13 +94,12 @@ pub fn parse(input: String) -> Result(Duration, Error) {
     [] -> Error(InvalidDuration)
     _ -> {
       use total <- result.try(parse_components(rest, 0))
-      case neg {
-        True -> Ok(duration.nanoseconds(-total))
-        False ->
-          case total > signed_max {
-            True -> Error(Overflow)
-            False -> Ok(duration.nanoseconds(total))
-          }
+      // A negative magnitude can reach unsigned_max (Go's -2^63 is valid);
+      // a positive one may not exceed signed_max (2^63 - 1).
+      case neg, total > signed_max {
+        True, _ -> Ok(duration.nanoseconds(-total))
+        False, True -> Error(Overflow)
+        False, False -> Ok(duration.nanoseconds(total))
       }
     }
   }
@@ -119,10 +119,8 @@ fn parse_components(g: List(String), acc: Int) -> Result(Int, Error) {
     _ -> {
       use #(nanos, rest) <- result.try(parse_component(g))
       let sum = acc + nanos
-      case sum > unsigned_max {
-        True -> Error(Overflow)
-        False -> parse_components(rest, sum)
-      }
+      use <- bool.guard(sum > unsigned_max, Error(Overflow))
+      parse_components(rest, sum)
     }
   }
 }
@@ -139,30 +137,25 @@ fn parse_component(g: List(String)) -> Result(#(Int, List(String)), Error) {
     _ -> #(0, 1.0, after_int, False)
   }
 
-  case had_int || had_frac {
-    False -> Error(InvalidDuration)
-    True -> {
-      let #(unit_str, after_unit) = take_unit_suffix(after_frac, "")
-      use per_unit <- result.try(case unit_str {
-        "" -> Error(MissingUnit)
-        u -> unit_to_nanos(u)
-      })
+  // A component must carry at least one digit, before or after the point.
+  use <- bool.guard(!had_int && !had_frac, Error(InvalidDuration))
 
-      use v_int <- result.try(checked_mul(int_part, per_unit))
-      let v_frac = case frac {
-        0 -> 0
-        _ ->
-          float.truncate(
-            int.to_float(frac) *. { int.to_float(per_unit) /. scale },
-          )
-      }
-      let v = v_int + v_frac
-      case v > unsigned_max {
-        True -> Error(Overflow)
-        False -> Ok(#(v, after_unit))
-      }
-    }
+  let #(unit_str, after_unit) = take_unit_suffix(after_frac)
+  use per_unit <- result.try(case unit_str {
+    "" -> Error(MissingUnit)
+    u -> unit_to_nanos(u)
+  })
+
+  use v_int <- result.try(checked_mul(int_part, per_unit))
+  let v_frac = case frac {
+    0 -> 0
+    _ ->
+      float.truncate(int.to_float(frac) *. { int.to_float(per_unit) /. scale })
   }
+  let v = v_int + v_frac
+
+  use <- bool.guard(v > unsigned_max, Error(Overflow))
+  Ok(#(v, after_unit))
 }
 
 fn leading_int(
@@ -172,18 +165,12 @@ fn leading_int(
   case g {
     [c, ..rest] ->
       case int.parse(c) {
-        Ok(d) ->
-          case acc > unsigned_max / 10 {
-            True -> Error(Overflow)
-            False -> {
-              let y = acc * 10 + d
-              case y > unsigned_max {
-                True -> Error(Overflow)
-                False -> leading_int(rest, y)
-              }
-            }
-          }
         Error(_) -> Ok(#(acc, g))
+        Ok(d) ->
+          case acc * 10 + d > unsigned_max {
+            True -> Error(Overflow)
+            False -> leading_int(rest, acc * 10 + d)
+          }
       }
     [] -> Ok(#(acc, g))
   }
@@ -198,37 +185,28 @@ fn leading_fraction(
   case g {
     [c, ..rest] ->
       case int.parse(c) {
-        Ok(d) ->
-          case overflowed {
-            True -> leading_fraction(rest, acc, scale, True)
-            False ->
-              case acc > signed_max / 10 {
-                True -> leading_fraction(rest, acc, scale, True)
-                False -> {
-                  let y = acc * 10 + d
-                  case y > unsigned_max {
-                    True -> leading_fraction(rest, acc, scale, True)
-                    False -> leading_fraction(rest, y, scale *. 10.0, False)
-                  }
-                }
-              }
-          }
         Error(_) -> #(acc, scale, g)
+        Ok(d) -> {
+          // Once we overflow we keep consuming digits but stop accumulating,
+          // mirroring Go. Unlike Go we needn't guard the multiply: Gleam ints
+          // are arbitrary-precision, so `y > unsigned_max` catches every case.
+          let y = acc * 10 + d
+          case overflowed || y > unsigned_max {
+            True -> leading_fraction(rest, acc, scale, True)
+            False -> leading_fraction(rest, y, scale *. 10.0, False)
+          }
+        }
       }
     [] -> #(acc, scale, g)
   }
 }
 
-fn take_unit_suffix(g: List(String), acc: String) -> #(String, List(String)) {
-  case g {
-    [c, ..rest] ->
-      case int.parse(c), c {
-        Ok(_), _ -> #(acc, g)
-        _, "." -> #(acc, g)
-        _, _ -> take_unit_suffix(rest, acc <> c)
-      }
-    [] -> #(acc, g)
-  }
+fn take_unit_suffix(g: List(String)) -> #(String, List(String)) {
+  // The unit runs until the next digit or decimal point (the start of the
+  // following component, e.g. the "3" in "1h3m").
+  let #(unit, rest) =
+    list.split_while(g, fn(c) { c != "." && result.is_error(int.parse(c)) })
+  #(string.concat(unit), rest)
 }
 
 fn checked_mul(a: Int, b: Int) -> Result(Int, Error) {
@@ -245,13 +223,7 @@ fn checked_mul(a: Int, b: Int) -> Result(Int, Error) {
 /// `<h>h<m>m<s>s` with trailing zero units omitted and a fractional seconds
 /// component when needed.
 pub fn to_string(d: Duration) -> String {
-  let #(s, ns) = duration.to_seconds_and_nanoseconds(d)
-  let total = s * nanos_per_second + ns
-  case total {
-    0 -> "0s"
-    n if n < 0 -> "-" <> format_magnitude(-n, False)
-    n -> format_magnitude(n, False)
-  }
+  format_duration(d, trim: False)
 }
 
 /// Like `to_string`, but with trailing zero components dropped.
@@ -264,12 +236,15 @@ pub fn to_string(d: Duration) -> String {
 /// Zero still formats as `"0s"`, and sub-second magnitudes are unchanged. The
 /// result always parses back to the same duration.
 pub fn to_string_trimmed(d: Duration) -> String {
+  format_duration(d, trim: True)
+}
+
+fn format_duration(d: Duration, trim trim: Bool) -> String {
   let #(s, ns) = duration.to_seconds_and_nanoseconds(d)
-  let total = s * nanos_per_second + ns
-  case total {
+  case s * nanos_per_second + ns {
     0 -> "0s"
-    n if n < 0 -> "-" <> format_magnitude(-n, True)
-    n -> format_magnitude(n, True)
+    n if n < 0 -> "-" <> format_magnitude(-n, trim)
+    n -> format_magnitude(n, trim)
   }
 }
 

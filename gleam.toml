@@ -1,5 +1,5 @@
 name = "duration_format"
-version = "1.1.0"
+version = "1.1.1"
 
 description = "Parse and format durations in established string formats. Currently supports Go's time.ParseDuration grammar (also used by Prometheus, Kubernetes, HashiCorp tools, and InfluxDB)."
 licences = ["MIT"]
