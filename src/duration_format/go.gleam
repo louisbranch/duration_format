@@ -249,15 +249,34 @@ pub fn to_string(d: Duration) -> String {
   let total = s * nanos_per_second + ns
   case total {
     0 -> "0s"
-    n if n < 0 -> "-" <> format_magnitude(-n)
-    n -> format_magnitude(n)
+    n if n < 0 -> "-" <> format_magnitude(-n, False)
+    n -> format_magnitude(n, False)
   }
 }
 
-fn format_magnitude(u: Int) -> String {
+/// Like `to_string`, but with trailing zero components dropped.
+///
+/// `to_string` always emits a full `<h>h<m>m<s>s` tail for one-second-and-up
+/// durations, so an exact hour formats as `"1h0m0s"`. This variant drops
+/// trailing zero units, yielding `"1h"` or `"1h30m"` instead. Intermediate
+/// zeros are preserved — `"1h0m30s"` keeps its `0m` — and a zero seconds
+/// component is kept when it carries a fraction (e.g. `"8m0.000000001s"`).
+/// Zero still formats as `"0s"`, and sub-second magnitudes are unchanged. The
+/// result always parses back to the same duration.
+pub fn to_string_trimmed(d: Duration) -> String {
+  let #(s, ns) = duration.to_seconds_and_nanoseconds(d)
+  let total = s * nanos_per_second + ns
+  case total {
+    0 -> "0s"
+    n if n < 0 -> "-" <> format_magnitude(-n, True)
+    n -> format_magnitude(n, True)
+  }
+}
+
+fn format_magnitude(u: Int, trim: Bool) -> String {
   case u < nanos_per_second {
     True -> format_subsecond(u)
-    False -> format_supersecond(u)
+    False -> format_supersecond(u, trim)
   }
 }
 
@@ -269,7 +288,7 @@ fn format_subsecond(u: Int) -> String {
   }
 }
 
-fn format_supersecond(u: Int) -> String {
+fn format_supersecond(u: Int, trim: Bool) -> String {
   let total_seconds = u / nanos_per_second
   let frac_nanos = u % nanos_per_second
   let secs = total_seconds % seconds_per_minute
@@ -277,12 +296,29 @@ fn format_supersecond(u: Int) -> String {
   let mins = total_minutes % seconds_per_minute
   let hours = total_minutes / seconds_per_minute
 
-  let seconds_str = int.to_string(secs) <> format_fraction(frac_nanos, 9) <> "s"
-  let with_mins = case hours > 0 || mins > 0 {
+  let show_hours = hours > 0
+  // When trimming we drop only trailing zero components; a zero seconds
+  // value is still kept when it carries a fraction (e.g. "8m0.000000001s").
+  let show_secs = case trim {
+    True -> secs > 0 || frac_nanos > 0
+    False -> True
+  }
+  // Minutes are emitted when non-zero, or — to preserve intermediate zeros —
+  // whenever they sit between a shown hour and a shown second.
+  let show_mins = case trim {
+    True -> mins > 0 || { show_hours && show_secs }
+    False -> hours > 0 || mins > 0
+  }
+
+  let seconds_str = case show_secs {
+    True -> int.to_string(secs) <> format_fraction(frac_nanos, 9) <> "s"
+    False -> ""
+  }
+  let with_mins = case show_mins {
     True -> int.to_string(mins) <> "m" <> seconds_str
     False -> seconds_str
   }
-  case hours > 0 {
+  case show_hours {
     True -> int.to_string(hours) <> "h" <> with_mins
     False -> with_mins
   }

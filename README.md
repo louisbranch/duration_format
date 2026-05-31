@@ -36,6 +36,8 @@ pub fn main() -> Nil {
 | `duration_format/go` | Go's `time.ParseDuration` grammar (`"1h30m"`, `"-2m3.4s"`, `"500ms"`, …) |
 
 Each format module exposes its own `parse`, `to_string`, and `Error` type.
+`go.to_string_trimmed` formats like `to_string` but drops trailing zero
+components (`"1h0m0s"` becomes `"1h"`), keeping intermediate zeros intact.
 
 ## Other time libraries
 

@@ -108,6 +108,33 @@ fn to_string_cases() -> List(#(Int, String)) {
   ]
 }
 
+/// to_string_trimmed drops trailing zero components but keeps intermediate ones.
+fn to_string_trimmed_cases() -> List(#(Int, String)) {
+  [
+    // zero and sub-second are identical to to_string
+    #(0, "0s"),
+    #(1, "1ns"),
+    #(1100, "1.1µs"),
+    #(500 * millisecond, "500ms"),
+    // exact units trim down to a single component
+    #(1 * hour, "1h"),
+    #(90 * minute, "1h30m"),
+    #(15 * minute, "15m"),
+    #(5 * second, "5s"),
+    // intermediate zero components are preserved
+    #(1 * hour + 30 * second, "1h0m30s"),
+    #(2 * hour + 5 * minute, "2h5m"),
+    // non-trimmed components stay put
+    #(4 * minute + 5 * second, "4m5s"),
+    #(5 * hour + 6 * minute + 7001 * millisecond, "5h6m7.001s"),
+    // a zero seconds value with a fraction is kept
+    #(8 * minute + 1, "8m0.000000001s"),
+    // negatives
+    #(-{ 1 * hour }, "-1h"),
+    #(-{ 90 * minute }, "-1h30m"),
+  ]
+}
+
 fn error_cases() -> List(String) {
   [
     "", "3", "-", "s", ".", "-.", ".s", "+.s", "1d",
@@ -152,6 +179,38 @@ pub fn to_string_cases_test() {
       case actual == expected {
         True -> Error(Nil)
         False -> Ok(#(nanos, expected, actual))
+      }
+    })
+  assert failures == []
+}
+
+pub fn to_string_trimmed_cases_test() {
+  let failures =
+    list.filter_map(to_string_trimmed_cases(), fn(case_) {
+      let #(nanos, expected) = case_
+      let actual = go.to_string_trimmed(duration.nanoseconds(nanos))
+      case actual == expected {
+        True -> Error(Nil)
+        False -> Ok(#(nanos, expected, actual))
+      }
+    })
+  assert failures == []
+}
+
+/// Every ok-case input must round-trip through to_string_trimmed too.
+pub fn trimmed_round_trip_test() {
+  let failures =
+    list.filter_map(ok_cases(), fn(case_) {
+      let #(input, _) = case_
+      case go.parse(input) {
+        Ok(d1) -> {
+          let s = go.to_string_trimmed(d1)
+          case go.parse(s) {
+            Ok(d2) if d1 == d2 -> Error(Nil)
+            other -> Ok(#(input, s, other))
+          }
+        }
+        Error(e) -> Ok(#(input, "parse failed", Error(e)))
       }
     })
   assert failures == []
